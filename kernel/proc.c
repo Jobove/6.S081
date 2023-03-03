@@ -155,7 +155,10 @@ freeproc(struct proc *p)
   p->alarm_trapframe = 0; 
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  p->interval = 0;
+  p->handler = 0;
   p->alarm_ongoing = 0;
+  p->ticks = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -294,6 +297,11 @@ fork(void)
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
+
+  np->alarm_ongoing = p->alarm_ongoing;
+  np->interval = p->interval;
+  *(np->alarm_trapframe) = *(p->alarm_trapframe);
+  np->handler = p->handler;
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;

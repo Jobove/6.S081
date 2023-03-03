@@ -117,6 +117,7 @@ uint64 sys_sigreturn(void) {
 
   *(p->trapframe) = *(p->alarm_trapframe);
   p->alarm_ongoing = 0;
+  p->ticks = 0;
 
   return 0;
 }
