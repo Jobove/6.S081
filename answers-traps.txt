@@ -1,0 +1,13 @@
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+   a0-a7, a2.
+2. Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+   26:	45b1                	li	a1,12 (The call to function f already inlined into x + 3.)
+   14:	250d                	addiw	a0,a0,3 (The call to function g also inlined into x + 3.)
+3. At what address is the function printf located?
+   0x640, can be seen in the comment "# 640 <printf>" or in the header of printf function "0000000000000640 <printf>:"
+4. What value is in the register ra just after the jalr to printf in main?
+   What jalr does here at 0x34 is jump into the value stored in ra added by 1552 and then write pc + 4 into ra, so the value in the ra after the jalr is pc + 4, which is 0x34 + 0x4 = 0x38.
+5. Run the following code. What is the output? If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+   The output is "He110, World". If RISC-V is big-endian instead, then i should be 0x726c6400, however, the value 57616 doesn't need to be changed.
+6. In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+   The value to be printed is the value stored in a2, that's because the function read the second argument from register a2.
