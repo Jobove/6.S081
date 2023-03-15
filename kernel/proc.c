@@ -243,9 +243,10 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
-      return -1;
-    }
+    sz += n;
+    // if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    //   return -1;
+    // }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -273,6 +274,14 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+
+  // lazy fork
+  // if (lazyfork(p->pagetable, np->pagetable, p->sz) < 0) {
+  //   freeproc(np);
+  //   release(&np->lock);
+  //   return -1;
+  // }
+
   np->sz = p->sz;
 
   np->parent = p;

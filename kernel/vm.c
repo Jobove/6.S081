@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -101,10 +103,11 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+  if(pte == 0 || (*pte & PTE_V) == 0) {
+    if (pagefaulthandler(va) < 0) {
+      return 0;
+    }
+  }
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
@@ -180,10 +183,15 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    if((pte = walk(pagetable, a, 0)) == 0) {
+      // panic("uvmunmap: walk");
+      continue;
+    }
+    if((*pte & PTE_V) == 0) {
+      // panic("uvmunmap: not mapped");
+      // *pte = 0;
+      continue;
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -282,7 +290,8 @@ freewalk(pagetable_t pagetable)
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
-    } else if(pte & PTE_V){
+    } else if(pte & PTE_V) {
+      // printf("%p\n", pte);
       panic("freewalk: leaf");
     }
   }
@@ -314,10 +323,16 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    if((pte = walk(old, i, 0)) == 0) {
+      // panic("uvmcopy: pte should exist");
+      continue;
+    }
+
+    if((*pte & PTE_V) == 0) {
+      // panic("uvmcopy: page not present");
+      // lazy allocated page
+      continue;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -439,4 +454,151 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// Used when a lazy allocated page is used and a page fault is thrown.
+int
+truealloc(pagetable_t pagetable, uint64 va) {
+  uint64 begin = PGROUNDDOWN(va);
+  void *pa = kalloc();
+
+  if (pa == 0) {
+    return -1;
+  }
+
+  memset(pa, 0, PGSIZE);
+  if (mappages(pagetable, begin, PGSIZE, (uint64)pa, PTE_R | PTE_W | PTE_U)) {
+    kfree(pa);
+    return -1;
+  }
+
+  return 0;
+}
+
+
+/*
+// lazy fork
+int 
+lazyfork(pagetable_t parent, pagetable_t child, uint64 sz) {
+  int npages = PGROUNDUP(sz) / PGSIZE;
+  for (int i = 0; i < npages; ++i) {
+    pte_t pte = *walk(parent, i * PGSIZE, 0);
+    uint64 va = i * PGSIZE, pa = PTE2PA(pte);
+
+    // lazy allocated page
+    if ((pte & PTE_V) == 0) {
+      continue;
+    }
+
+    int idx = (pa - KERNBASE) / PGSIZE;
+    uint64 flags = PTE_FLAGS(pte);
+    int res = 0;
+    if (!refcount[idx]) {
+      ++refcount[idx];
+    }
+    ++refcount[idx];
+
+    if (flags & PTE_W) {
+      void *new_page = (void *)kalloc();
+      if (new_page == 0) {
+        panic("lazy fork: kalloc");
+      }
+
+      memmove(new_page, (void *)pa, PGSIZE);
+      kfree((void *)pa);
+      uvmunmap(parent, va, 1, 0);
+      printf("%p\n", (uint64)new_page);
+      res += mappages(parent, PGROUNDDOWN(va), PGSIZE, (uint64)new_page, (flags & (~PTE_W)) | PTE_L);
+      res += mappages(child, PGROUNDDOWN(va), PGSIZE, (uint64)new_page, (flags & (~PTE_W)) | PTE_L);
+    } else {
+      printf("%p\n", pa);
+      res += mappages(child, PGROUNDDOWN(va), PGSIZE, pa, flags);
+    }
+
+    if (res) {
+      return res;
+    }
+  }
+
+  return 0;
+}*/
+
+/*
+// copy a new page and then change the permission of the new page,
+// doesn't need to change the origin page but minus the ref counter by one.
+int
+lazyforkhandler(pagetable_t pagetable, uint64 va) {
+  void *new_page;
+  if ((new_page = kalloc()) == 0) { 
+    return -1;
+  }
+
+  pte_t pte = *walk(pagetable, va, 0);
+  int perm = (PTE_FLAGS(pte) & ~PTE_L) | PTE_W;
+  void *old_page = (void *)PTE2PA(pte);
+  memmove(new_page, old_page, PGSIZE);
+
+  uvmunmap(pagetable, PGROUNDDOWN(va), 1, 0);
+  // --refcount[PGROUNDDOWN(PTE2PA(pte) - KERNBASE) / PGSIZE];
+
+  if (mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)new_page, perm) < 0) {
+    return -1;
+  }
+
+  return 0;
+}
+
+*/
+
+int 
+pagefaulthandler(uint64 va) {
+  struct proc *p = myproc();
+  // trying to access address beyond allocation.
+  if (va >= p->sz) {
+    return -1;
+  }
+  // accessing address that is below user stack
+  if (PGROUNDDOWN(va) < p->trapframe->sp) {
+    return -1;
+  }
+  pte_t *pte = walk(p->pagetable, va, 0);
+  // lazy allocated page handler
+  if ((!pte || (PTE_FLAGS(*pte) & PTE_V) == 0) && truealloc(p->pagetable, va) < 0) {
+    return -1;
+  }
+
+  return 0;
+}
+
+void 
+printwalk(pte_t addr, int level, int index, char is_pte) 
+{
+  pagetable_t pagetable;
+  
+  if (level == 0) {
+    printf("page table %p\n", addr);
+    pagetable = (pagetable_t)addr;
+  } else {
+    for (int i = 0; i < level; ++i)
+      printf(" ..");
+    printf("%d: pte %p pa %p\n", index, addr, PTE2PA(addr));
+
+    if (is_pte)
+      return;
+    pagetable = (pagetable_t)(PTE2PA(addr));
+  }
+
+  for (int i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0)
+      printwalk(pte, level + 1, i, 0);
+    else if ((pte & PTE_V))
+      printwalk(pte, level + 1, i, 1);
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printwalk((pte_t)pagetable, 0, 0, 0);
 }
