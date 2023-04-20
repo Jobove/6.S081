@@ -563,7 +563,7 @@ pagefaulthandler(uint64 va) {
   }
   pte_t *pte = walk(p->pagetable, va, 0);
   // lazy allocated page handler
-  if ((!pte || (PTE_FLAGS(*pte) & PTE_V) == 0) && truealloc(p->pagetable, va) < 0) {
+  if (!((!pte || (PTE_FLAGS(*pte) & PTE_V) == 0) && truealloc(p->pagetable, va) == 0)) {
     return -1;
   }
 
