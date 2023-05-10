@@ -62,11 +62,9 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-  
+
   int idx = PAGE_INDEX((uint64)pa);
 
-  if (ref_count[idx] <= 0)
-    panic("kfree: ref_count less than zero");
   acquire(&ref.lock);
   if (--ref_count[idx] > 0) {
     release(&ref.lock);
@@ -100,11 +98,11 @@ kalloc(void)
   release(&kmem.lock);
 
   if(r) {
-    int idx = PAGE_INDEX((uint64)r);
     memset((char*)r, 5, PGSIZE); // fill with junk
+
+    int idx = PAGE_INDEX((uint64)r);
+
     acquire(&ref.lock);
-    if (ref_count[idx] != 0)
-      panic("kalloc: new page ref count not 0");
     ref_count[idx] = 1;
     release(&ref.lock);
   }

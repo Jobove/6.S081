@@ -321,7 +321,7 @@ void uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
-int 
+int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
@@ -489,7 +489,7 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-int 
+int
 copy_on_write_page_fault_handler(pagetable_t pagetable, uint64 va)
 {
   void *new_page = 0;
@@ -500,10 +500,10 @@ copy_on_write_page_fault_handler(pagetable_t pagetable, uint64 va)
   if (pte == 0)
     goto err;
   uint64 pa = PTE2PA(*pte), flags = PTE_FLAGS(*pte);
-  if ((flags & PTE_V) == 0)
+  if (!(flags & PTE_V))
     goto err;
 
-  if (!(flags & PTE_C))
+  if (!(flags & PTE_C) && (flags & PTE_W))
     return 0;
 
   if ((new_page = kalloc()) == 0)
