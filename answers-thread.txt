@@ -1,0 +1,4 @@
+Why are there missing keys with 2 threads, but not with 1 thread? Identify a sequence of events with 2 threads that can lead to a key being missing.
+
+Answer:
+Assume that there are 2 threads called a and b respectively. A key may be missing when, for example, thread b begins its "put" operation before thread a's modification to p, where p is a pointer referring to the address of the pointer referring to the entry of the correspoding key. In this case, both threads will set the "next" pointer pointing to the address of former first entry, however, both threads will also set the first entry of the correspoding bucket, aka "p" in function put's code, to their newly allocated struct entry. Thus, both struct entries allocated by each thread will set their "next" pointer pointing to the former table[i], however, the table[i] is only able to point to one of the new entries. Therefore, the key specified by the entry which is not pointed by the table[i], misses.

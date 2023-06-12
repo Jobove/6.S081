@@ -36,9 +36,9 @@ struct thread {
 };
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
-extern void thread_switch(struct context *, struct context *, void *func);
-              
-void 
+void thread_switch(struct context *, struct context *);
+
+void
 thread_init(void)
 {
   // main() is thread 0, which will make the first invocation to
@@ -50,7 +50,7 @@ thread_init(void)
   current_thread->state = RUNNING;
 }
 
-void 
+void
 thread_schedule(void)
 {
   struct thread *t, *next_thread;
@@ -81,16 +81,12 @@ thread_schedule(void)
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
-    // printf("invoke thread_switch\n");
-    thread_switch(&(t->context), &(next_thread->context), t->func);
-    // t->context.ra = (uint64)t->func;
-    // printf("%x %x\n", (uint64)t, (uint64)next_thread);
-    // printf("switched\n");
+    thread_switch(&(t->context), &(next_thread->context));
   } else
     next_thread = 0;
 }
 
-void 
+void
 thread_create(void (*func)())
 {
   struct thread *t;
@@ -100,26 +96,23 @@ thread_create(void (*func)())
   }
   t->state = RUNNABLE;
   // YOUR CODE HERE
-  memset(t->stack, 0, sizeof(*t->stack));
   t->func = func;
   t->context.ra = (uint64)func;
+
   t->context.sp = (uint64)&t->stack[STACK_SIZE];  // FROM TOP TO BOTTOM!!!
-  printf("thread created.\n");
-  printf("%x\n", (uint64)func);
 }
 
-void 
+void
 thread_yield(void)
 {
   current_thread->state = RUNNABLE;
-  printf("thread_yield called.\n");
   thread_schedule();
 }
 
 volatile int a_started, b_started, c_started;
 volatile int a_n, b_n, c_n;
 
-void 
+void
 thread_a(void)
 {
   int i;
@@ -127,10 +120,9 @@ thread_a(void)
   a_started = 1;
   while(b_started == 0 || c_started == 0)
     thread_yield();
-  
+
   for (i = 0; i < 100; i++) {
     printf("thread_a %d\n", i);
-    printf("%d %d %d\n", all_thread[1].state, all_thread[2].state, all_thread[3].state);
     a_n += 1;
     thread_yield();
   }
@@ -140,7 +132,7 @@ thread_a(void)
   thread_schedule();
 }
 
-void 
+void
 thread_b(void)
 {
   int i;
@@ -148,10 +140,9 @@ thread_b(void)
   b_started = 1;
   while(a_started == 0 || c_started == 0)
     thread_yield();
-  
+
   for (i = 0; i < 100; i++) {
     printf("thread_b %d\n", i);
-    printf("%d %d %d\n", all_thread[1].state, all_thread[2].state, all_thread[3].state);
     b_n += 1;
     thread_yield();
   }
@@ -161,16 +152,15 @@ thread_b(void)
   thread_schedule();
 }
 
-void 
+void
 thread_c(void)
 {
   int i;
-  printf("%d %d %d\n", all_thread[1].state, all_thread[2].state, all_thread[3].state);
   printf("thread_c started\n");
   c_started = 1;
   while(a_started == 0 || b_started == 0)
     thread_yield();
-  
+
   for (i = 0; i < 100; i++) {
     printf("thread_c %d\n", i);
     c_n += 1;
@@ -182,8 +172,8 @@ thread_c(void)
   thread_schedule();
 }
 
-int 
-main(int argc, char *argv[]) 
+int
+main(int argc, char *argv[])
 {
   a_started = b_started = c_started = 0;
   a_n = b_n = c_n = 0;
