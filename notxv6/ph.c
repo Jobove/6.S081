@@ -34,17 +34,21 @@ now()
  return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
-static void 
-insert(int key, int value, struct entry **p, struct entry *n)
+static void
+insert(int key, int value, struct entry **p)
 {
   struct entry *e = malloc(sizeof(struct entry));
+  int i = p - table;
+
   e->key = key;
   e->value = value;
-  e->next = n;
+  pthread_mutex_lock(mutex + i);
+  e->next = table[i];
   *p = e;
+  pthread_mutex_unlock(mutex + i);
 }
 
-static 
+static
 void put(int key, int value)
 {
   int i = key % NBUCKET;
@@ -60,9 +64,9 @@ void put(int key, int value)
     e->value = value;
   } else {
     // the new is new.
-    while (pthread_mutex_lock(mutex + i) != 0);
-    insert(key, value, &table[i], table[i]);
-    pthread_mutex_unlock(mutex + i);
+    // while (pthread_mutex_lock(mutex + i) != 0);
+    insert(key, value, &table[i]);
+    // pthread_mutex_unlock(mutex + i);
   }
 }
 
@@ -125,6 +129,7 @@ main(int argc, char *argv[])
   for (int i = 0; i < NKEYS; i++) {
     keys[i] = random();
   }
+  init();
 
   //
   // first the puts
