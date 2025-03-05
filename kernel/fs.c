@@ -200,8 +200,8 @@ ialloc(uint dev, short type)
   struct dinode *dip;
 
   for(inum = 1; inum < sb.ninodes; inum++){
-    bp = bread(dev, IBLOCK(inum, sb));
-    dip = (struct dinode*)bp->data + inum%IPB;
+    bp = bread(dev, IBLOCK(inum, sb));  // struct superblock 中inodestart指明第一个inode块的序号，通过IBLOCK计算出inum号inode所在的磁盘块编号，而后通过bread读取inode所在的块。
+    dip = (struct dinode*)bp->data + inum%IPB;  // 块中数据实际为dinode数组（考虑到对齐问题，可能dinode大小是块大小的因子？），强转后由偏置值得到inum对应的dinode的指针。
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
       dip->type = type;
@@ -334,7 +334,13 @@ iput(struct inode *ip)
 {
   acquire(&icache.lock);
 
-  if(ip->ref == 1 && ip->valid && ip->nlink == 0){
+  if(ip->ref == 1 && ip->valid && ip->nlink == 0){  
+    // 三个条件中，ref显然大于0。
+    // valid存在两种情况：若inode是由iget()获取，则valid一定为真，则其内容一定存在于硬盘中，故需要进行回收；若inode是由ialloc()获取，则存在该inode为刚刚新建的情况，此时硬盘上未必存在对应内容，即valid为假，无需回收。
+    // nlink条件确保没有其他指向该inode的链接。
+    // TODO：如果这是释放磁盘上inode的文件的唯一途径，是否所有删除某文件（链接）的方法都需要首先打开该inode？
+    // 答：是的，删除文件首先需要通过itruc()将文件内容释放，即修改了文件的内容，必然需要打开inode。
+
     // inode has no links and no other references: truncate and free.
 
     // ip->ref == 1 means no other process can have ip locked,
