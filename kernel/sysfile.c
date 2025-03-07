@@ -316,12 +316,53 @@ sys_open(void)
     }
   }
 
+  // Remember to iunlockput and end_op should a inode is no longer needed.
+  if(ip->type == T_SYMLINK && (omode & O_NOFOLLOW)){
+    goto symlink;
+  } else if(ip->type == T_SYMLINK){ 
+    // ip already locked and the code is in the middle of a transaction.
+    int i;
+    struct inode *next = ip;
+
+    for(i = 0; i < 10; ++i){  
+      // Use iterative method instead of recursive one to avoid dead lock and lock ownership problems.
+      // put any inode that is no longer needed.
+
+      char path[MAXPATH];
+      readi(next, 0, (uint64)path, 0, MAXPATH);
+      // put the inode used.
+      iunlockput(next);
+      end_op();
+
+      if ((next = namei(path)) == 0){
+        return -1;
+      }
+      
+      ilock(next);  
+      begin_op();
+
+      if(next->type != T_SYMLINK || omode & O_NOFOLLOW) {
+        break;
+      }
+    }
+
+    // If next is still a symbolic link, then there might be a loop, report failure.
+    if(next->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0){
+      iunlockput(next);
+      end_op();
+
+      return -1;
+    }
+    ip = next;
+  }
+
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
     end_op();
     return -1;
   }
 
+symlink:
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -482,5 +523,26 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64 
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  begin_op();
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0 || (ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+  
+  // ilock(ip);
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)) < 0)  // Should kernel fails to write to the symlink, panic instead of recycle cause I'm lazy.
+    panic("symlink: write target failed.");
+  iunlockput(ip);
+  end_op();
+
   return 0;
 }

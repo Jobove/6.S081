@@ -696,15 +696,18 @@ namex(char *path, int nameiparent, char *name)
 
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
+    // Didn't get a directory as expected.
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
+    // Expected scenario for nameiparent.
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
       return ip;
     }
+    // Path unmatched, exit.
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
@@ -712,6 +715,7 @@ namex(char *path, int nameiparent, char *name)
     iunlockput(ip);
     ip = next;
   }
+  // Confused. It might be designed to exclude the situation where nameiparent is true and path looks like ""(empty string or ///).
   if(nameiparent){
     iput(ip);
     return 0;
