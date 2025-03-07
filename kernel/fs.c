@@ -339,7 +339,7 @@ iput(struct inode *ip)
     // valid存在两种情况：若inode是由iget()获取，则valid一定为真，则其内容一定存在于硬盘中，故需要进行回收；若inode是由ialloc()获取，则存在该inode为刚刚新建的情况，此时硬盘上未必存在对应内容，即valid为假，无需回收。
     // nlink条件确保没有其他指向该inode的链接。
     // TODO：如果这是释放磁盘上inode的文件的唯一途径，是否所有删除某文件（链接）的方法都需要首先打开该inode？
-    // 答：是的，删除文件首先需要通过itruc()将文件内容释放，即修改了文件的内容，必然需要打开inode。
+    // 答：是的，删除文件首先需要通过itrunc()将文件内容释放，即修改了文件的内容，必然需要打开inode。
 
     // inode has no links and no other references: truncate and free.
 
@@ -410,22 +410,23 @@ bmap(struct inode *ip, uint bn)
   
   if (bn < NDINDIRECT){
     // Load 1st dindirect block, containing 256 numbers referring to the 2nd dindirect blocks, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT+1]))
-      ip->addrs[NDINDIRECT+1] = addr = balloc(ip->dev);
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     // bp is now the 1st dindirect block whilst a contains its data
 
-    uint first = bn / 256, second = bn % 256;
+    uint first = bn / NINDIRECT, second = bn % NINDIRECT;
     if((addr = a[first]) == 0){  // should the 2nd dindirect block unallocated
       a[first] = addr = balloc(ip->dev);
       log_write(bp);
     }
+    brelse(bp);
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     // bp is now the 2nd dindirect block whilst a contains its data
 
-    if ((addr = a[second] == 0)){ //should the actual block unallocated
+    if ((addr = a[second]) == 0){ //should the actual block unallocated
       a[second] = addr = balloc(ip->dev);
       log_write(bp);
     }
@@ -441,7 +442,7 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
+  int i, j, k;
   struct buf *bp;
   uint *a;
 
@@ -462,6 +463,32 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // recycle the NDINDIRECT blocks.
+  if(ip->addrs[NDIRECT+1]){
+    struct buf *sen;
+    uint *b;
+
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(j = 0; j < NINDIRECT; j++){
+      if(a[j]){
+        sen = bread(ip->dev, a[j]);
+        b = (uint*)sen->data;
+        
+        for(k = 0; k < NINDIRECT; k++){
+          if(b[k]){
+            bfree(ip->dev, b[k]);
+          }
+        }
+        brelse(sen);
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
