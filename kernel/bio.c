@@ -23,9 +23,11 @@
 #include "fs.h"
 #include "buf.h"
 
+#define BNUM (13)
+
 struct {
   struct spinlock lock;
-  struct buf buf[NBUF];
+  struct buf buf[NBUF * BNUM];
 
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
@@ -230,14 +232,37 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
+  uint i = b->blockno % HNUM;
+
+  acquire(&hashtable.lock[i]);
+  b->refcnt--;
+  if (b->refcnt == 0) {
+    // no one is waiting for it.
+    b->next->prev = b->prev;
+    b->prev->next = b->next;
+    b->next = hashtable.head[i].next;
+    b->prev = &hashtable.head[i];
+    hashtable.head[i].next->prev = b;
+    hashtable.head[i].next = b;
+  }
+
+  release(&hashtable.lock[i]);
+
   releasesleep(&b->lock);
 
-  int index = b->blockno % HNUM;
+  // acquire(&bcache.lock);
+  // b->refcnt--;
+  // if (b->refcnt == 0) {
+  //   // no one is waiting for it.
+  //   b->next->prev = b->prev;
+  //   b->prev->next = b->next;
+  //   b->next = bcache.head.next;
+  //   b->prev = &bcache.head;
+  //   bcache.head.next->prev = b;
+  //   bcache.head.next = b;
+  // }
 
-  acquire(&hashtable.lock[index]);
-  b->refcnt--;
-  b->tick = ticks;
-  release(&hashtable.lock[index]);
+  // release(&bcache.lock);
 }
 
 void
