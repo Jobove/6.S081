@@ -23,73 +23,13 @@
 #include "fs.h"
 #include "buf.h"
 
-#define BNUM (13)
-
 struct {
+  // The lock that must be acquire before any proccess trys to evict buf.
   struct spinlock lock;
-  struct buf buf[NBUF * BNUM];
-
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  // struct buf head;
+  struct buf buf[NBUF];
 } bcache;
 
-// struct rwlock {
-//   struct spinlock lock;
-//   uint reader;
-//   uint write;
-// };
-
-// void
-// rwinit(struct rwlock *l, const char *name)
-// {
-//   l->reader = 0;
-//   initlock(&l->lock, name);
-// }
-
-// uint
-// rwread(struct rwlock *l)
-// {
-//   acquire(&l->lock);
-//   if(l->write) {
-//     release(&l->lock);
-//     return 0;
-//   }
-//   l->reader++;
-//   release(&l->lock);
-//   return 1;
-// }
-
-// void
-// rwunread(struct rwlock *l)
-// {
-//   acquire(&l->lock);
-//   l->reader--;
-//   release(&l->lock);
-// }
-
-// uint
-// rwwrite(struct rwlock *l)
-// {
-//   acquire(&l->lock);
-//   if(l->reader || l->write) {
-//     release(&l->lock);
-//     return 0;
-//   }
-//   l->write = 1;
-//   release(&l->lock);
-// }
-
-// uint
-// rwunwrite(struct rwlock *l)
-// {
-//   acquire(&l->lock);
-//   l->write = 0;
-//   release(&l->lock);
-// }
-
-#define HNUM (31)
+#define HNUM (13)
 
 struct hashtable {
   struct buf head[HNUM];
@@ -118,7 +58,7 @@ hinit(void)
   int i;
   for (i = 0; i < HNUM; ++i){
     char lockname[16];
-    snprintf(lockname, 16, "bcache%d", i);
+    snprintf(lockname, 16, "bcache.bucket%d", i);
 
     initlock(&hashtable.lock[i], lockname);
   }
@@ -150,8 +90,6 @@ binit(void)
   initlock(&bcache.lock, "bcache");
 
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    // b->blockno = __INT32_MAX__;
-    // b->refcnt = 0;
     hadd(b - bcache.buf, b);
     initsleeplock(&b->lock, "buffer");
   }
@@ -182,58 +120,40 @@ bget(uint dev, uint blockno)
   int earliest = __INT32_MAX__;
   struct buf *select = 0;
 
-  acquire(&bcache.lock);  // Prevent other proc from evicting.
+  // Any process trying to evict should acquire bcache.lock first.
+  // However, do not try to lock hashtable.lock[index] before here which may cause deadlock.
+  // Remember to double-check if the block is already cached because of we release hashtable.lock[index].
+  acquire(&bcache.lock);
   // Look for the LRU.
+  // As mentioned above, to avoid deadlock, acquire hashtable.lock[] ascendingly, which means there will be time gap between previous check of whether block is already cached and the following selecting process.
   for(int i = 0; i < HNUM; ++i){
     acquire(&hashtable.lock[i]);
     struct buf *ptr = &hashtable.head[i];
     int selected = 0;
     while(ptr != 0) {
+      // Continue if the current buf is being used or one of the heads.
       if(ptr->refcnt > 0 || ptr->tick >= earliest || ptr == &hashtable.head[i]){
         ptr = ptr->next;
         continue;
       }
 
+      // If there's a better choice, release the lock of the latter one, except when there's no buf selected, or the buf is in the same bucket with the one that's being bget() or the same bucket with the last one selected.
       int relcond = select != 0 && i != index && selected == 0;
       if(relcond)
         release(&hashtable.lock[select->blockno % HNUM]);
+      // Mark that indicates there's one buf being selected in this bucket.
       selected = 1;
       earliest = ptr->tick;
       select = ptr;
       ptr = ptr->next;
     }
+    // Release the lock of the bucket, if there's no buf being selected or the current bucket is the one the buf being bget() should be in.
     if(!selected && i != index)
       release(&hashtable.lock[i]);
   }
-/*   for (int i = 0; i < NBUF; ++i){
-    uint idx = bcache.buf[i].blockno % HNUM, isequal = (idx == index);
-    int relcond = select != 0 && ((select->blockno % HNUM) != idx);
-    if(!isequal){
-      acquire(&hashtable.lock[idx]);
-    }
-    if(bcache.buf[i].refcnt > 0 || bcache.buf[i].tick >= earliest){
-      if(relcond)
-        release(&hashtable.lock[idx]);
-      continue;
-    }
+  // After the loop above, both (or the only one needed) bucket(s) are locked
 
-    if(relcond){
-      release(&hashtable.lock[idx]);
-      acquire(&hashtable.lock[select->blockno % HNUM]);
-    }
-    earliest = bcache.buf[i].tick;
-    select = &bcache.buf[i];
-  } */
-/*   for(i = 0; i < NBUF; ++i){
-    if(bcache.buf[i].refcnt > 0)
-      continue;
-
-    if(bcache.buf[i].tick >= earliest)
-      continue;
-
-    earliest = bcache.buf[i].tick;
-    select = &bcache.buf[i];
-  } */
+  // Because of the time gap mentioned above, double-check if there's existing one that's of the same blockno. If so, return.
   if((b = hget(dev, blockno)) != 0){
     b->refcnt++;
     if(select && (select->blockno % HNUM != index))
@@ -247,42 +167,16 @@ bget(uint dev, uint blockno)
   if(!select)
     panic("bget: no buffers");
 
-
-/*   // Selected block has never been used. Add it to the hash table.
-  if(select->blockno == __INT32_MAX__){
-    struct buf *node = &hashtable.head[index];
-    while(node->next)
-      node = node->next;
-
-    node->next = select;
-    node->next->blockno = blockno;
-    select->prev = node;
-    select->next = 0;
-
-    select->dev = dev;
-    select->blockno = blockno;
-    select->valid = 0;
-    select->refcnt = 1;
-
-    for(int i = 0; i < HNUM; ++i)
-      release(&hashtable.lock[i]);
-    // release(&hashtable.lock[index]);  // Lock for bucket shouldn't be released until any modification is done, not even before dev/blockno/valid/refcnt is modified.
-    release(&bcache.lock);
-    acquiresleep(&select->lock);
-    return select;
-  } */
-
   int previ = select->blockno % HNUM;
 
   if(previ != index){
-    // Only if one proc owns bcache.lock will it try to lock more locks so no dead lock is probable.
-    // acquire(&hashtable.lock[previ]);
-
-    struct buf *tail = &hashtable.head[index];     // node should always equal to select but it's unnecessary so I delete it.
-    // if(node->prev != &hashtable.head[previ])   // select should always modify his prev->next.
+    struct buf *tail = &hashtable.head[index];
+    // Because of hashtable.head[], there will always be a select->prev.
     select->prev->next = select->next;
     if(select->next != 0)
       select->next->prev = select->prev;
+
+    // Release the bucket from which the buf is moved that is no longer needed.
     release(&hashtable.lock[previ]);
 
     while(tail->next != 0){
@@ -303,9 +197,6 @@ bget(uint dev, uint blockno)
     select->refcnt = 1;
   }
 
-  // for(int i = 0; i < HNUM; ++i)
-  //   release(&hashtable.lock[i]);
-  // release(&hashtable.lock[index]);  // Maybe this lock should always be locked.
   release(&hashtable.lock[index]);
   release(&bcache.lock);
   acquiresleep(&select->lock);
