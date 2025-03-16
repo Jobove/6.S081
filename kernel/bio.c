@@ -28,7 +28,6 @@
 struct {
   // The lock that must be acquire before any proccess trys to evict buf.
   struct spinlock lock;
-<<<<<<< HEAD
   struct buf buf[NBUF];
 } bcache;
 
@@ -82,52 +81,11 @@ hadd(uint blockno, struct buf *b)
   tail->next = b;
   b->prev = tail;
   b->next = 0;
-=======
-  struct buf buf[NBUF * BNUM];
-
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  struct buf head;
-} bcache;
-
-struct hashtable {
-  struct buf head[BNUM];
-  struct spinlock lock[BNUM];
-} hashtable;
-
-void
-hinit(void) {
-  struct buf *b;
-
-  for (int i = 0; i < BNUM; ++i) {
-    char name[12];
-    snprintf(name, 12, "bcache.%04d", i);
-    initlock(&hashtable.lock[i], name);
-    hashtable.head[i].prev = &hashtable.head[i];
-    hashtable.head[i].next = &hashtable.head[i];
-  }
-
-  for(b = bcache.buf; b < bcache.buf+NBUF * BNUM; b++){
-    uint i = (b - bcache.buf) % BNUM;
-    // printf("%d\n", (b - bcache.buf));
-    struct buf *h = &hashtable.head[i];
-
-    b->next = h->next;
-    b->prev = h;
-    initsleeplock(&b->lock, "buffer");
-    h->next->prev = b;
-    h->next = b;
-
-    b->bucket = i;
-  }
->>>>>>> lock
 }
 
 void
 binit(void)
 {
-<<<<<<< HEAD
   hinit();  // Initialize hashtable
   struct buf *b;
 
@@ -137,23 +95,6 @@ binit(void)
     hadd(b - bcache.buf, b);
     initsleeplock(&b->lock, "buffer");
   }
-=======
-  hinit();
-  // struct buf *b;
-
-  initlock(&bcache.lock, "bcache");
-
-  // Create linked list of buffers
-  // bcache.head.prev = &bcache.head;
-  // bcache.head.next = &bcache.head;
-  // for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-  //   b->next = bcache.head.next;
-  //   b->prev = &bcache.head;
-  //   initsleeplock(&b->lock, "buffer");
-  //   bcache.head.next->prev = b;
-  //   bcache.head.next = b;
-  // }
->>>>>>> lock
 }
 
 // Look through buffer cache for block on device dev.
@@ -165,7 +106,6 @@ bget(uint dev, uint blockno)
   uint index = blockno % HNUM;
   struct buf *b;
 
-<<<<<<< HEAD
   // Is the block already cached?
   acquire(&hashtable.lock[index]);
   if((b = hget(dev, blockno)) != 0){
@@ -174,25 +114,11 @@ bget(uint dev, uint blockno)
     acquiresleep(&b->lock);
 
     return b;
-=======
-  uint i = blockno % BNUM;
-  acquire(&hashtable.lock[i]);
-
-  // Is the block already cached?
-  for(b = hashtable.head[i].next; b != &hashtable.head[i]; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&hashtable.lock[i]);
-      acquiresleep(&b->lock);
-      return b;
-    }
->>>>>>> lock
   }
   release(&hashtable.lock[index]);
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-<<<<<<< HEAD
   int earliest = __INT32_MAX__;
   struct buf *select = 0;
 
@@ -257,17 +183,6 @@ bget(uint dev, uint blockno)
 
     while(tail->next != 0){
       tail = tail->next;
-=======
-  for(b = hashtable.head[i].prev; b != &hashtable.head[i]; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&hashtable.lock[i]);
-      acquiresleep(&b->lock);
-      return b;
->>>>>>> lock
     }
     tail->next = select;
     select->prev = tail;
@@ -284,42 +199,11 @@ bget(uint dev, uint blockno)
     select->refcnt = 1;
   }
 
-<<<<<<< HEAD
   release(&hashtable.lock[index]);
   release(&bcache.lock);
   acquiresleep(&select->lock);
 
   return select;
-=======
-  printf("%d\n", i);
-
-  // acquire(&bcache.lock);
-
-  // // Is the block already cached?
-  // for(b = bcache.head.next; b != &bcache.head; b = b->next){
-  //   if(b->dev == dev && b->blockno == blockno){
-  //     b->refcnt++;
-  //     release(&bcache.lock);
-  //     acquiresleep(&b->lock);
-  //     return b;
-  //   }
-  // }
-
-  // // Not cached.
-  // // Recycle the least recently used (LRU) unused buffer.
-  // for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-  //   if(b->refcnt == 0) {
-  //     b->dev = dev;
-  //     b->blockno = blockno;
-  //     b->valid = 0;
-  //     b->refcnt = 1;
-  //     release(&bcache.lock);
-  //     acquiresleep(&b->lock);
-  //     return b;
-  //   }
-  // }
-  panic("bget: no buffers");
->>>>>>> lock
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -353,7 +237,6 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
-<<<<<<< HEAD
   uint i = b->blockno % HNUM;
 
   acquire(&hashtable.lock[i]);
@@ -361,39 +244,6 @@ brelse(struct buf *b)
   release(&hashtable.lock[i]);
 
   releasesleep(&b->lock);
-=======
-  uint i = b->bucket;
-
-  acquire(&hashtable.lock[i]);
-  b->refcnt--;
-  if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = hashtable.head[i].next;
-    b->prev = &hashtable.head[i];
-    hashtable.head[i].next->prev = b;
-    hashtable.head[i].next = b;
-  }
-
-  release(&hashtable.lock[i]);
-
-  releasesleep(&b->lock);
-
-  // acquire(&bcache.lock);
-  // b->refcnt--;
-  // if (b->refcnt == 0) {
-  //   // no one is waiting for it.
-  //   b->next->prev = b->prev;
-  //   b->prev->next = b->next;
-  //   b->next = bcache.head.next;
-  //   b->prev = &bcache.head;
-  //   bcache.head.next->prev = b;
-  //   bcache.head.next = b;
-  // }
-
-  // release(&bcache.lock);
->>>>>>> lock
 }
 
 void
