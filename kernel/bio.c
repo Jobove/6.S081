@@ -23,15 +23,23 @@
 #include "fs.h"
 #include "buf.h"
 
-#define BNUM (13)
-
 struct {
   // The lock that must be acquire before any proccess trys to evict buf.
   struct spinlock lock;
   struct buf buf[NBUF];
 } bcache;
 
+struct buf *
+gettail(struct buf *b)
+{
+  while(b->next)
+    b = b->next;
+
+  return b;
+}
+
 #define HNUM (13)
+#define INDEX(blockno) ((blockno) % (HNUM))
 
 struct hashtable {
   struct buf head[HNUM];
@@ -41,7 +49,7 @@ struct hashtable {
 struct buf *
 hget(uint dev, int blockno)
 {
-  uint i = blockno % HNUM;
+  uint i = INDEX(blockno);
 
   struct buf *b = &hashtable.head[i];
   while(b != 0){
@@ -55,6 +63,21 @@ hget(uint dev, int blockno)
 }
 
 void
+hadd(uint blockno, struct buf *b)
+{
+  b->blockno = blockno;
+  b->refcnt = 0;
+  b->valid = 0;
+
+  uint i = INDEX(blockno);
+  struct buf *tail = gettail(&hashtable.head[i]);
+
+  tail->next = b;
+  b->prev = tail;
+  b->next = 0;
+}
+
+void
 hinit(void)
 {
   int i;
@@ -64,37 +87,21 @@ hinit(void)
 
     initlock(&hashtable.lock[i], lockname);
   }
-}
 
-void
-hadd(uint blockno, struct buf *b)
-{
-  b->blockno = blockno;
-  b->refcnt = 0;
-  b->valid = 0;
+  for(i = 0; i < NBUF; ++i){
+    struct buf *b = &bcache.buf[i];
 
-  uint i = blockno % HNUM;
-  struct buf *tail = &hashtable.head[i];
-  while(tail->next != 0)
-    tail = tail->next;
-
-  tail->next = b;
-  b->prev = tail;
-  b->next = 0;
+    hadd(i, b);
+    initsleeplock(&b->lock, "buffer");
+  }
 }
 
 void
 binit(void)
 {
-  hinit();  // Initialize hashtable
-  struct buf *b;
+  hinit();  // Initialize hashtable、
 
   initlock(&bcache.lock, "bcache");
-
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    hadd(b - bcache.buf, b);
-    initsleeplock(&b->lock, "buffer");
-  }
 }
 
 // Look through buffer cache for block on device dev.
@@ -103,7 +110,7 @@ binit(void)
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  uint index = blockno % HNUM;
+  uint index = INDEX(blockno);
   struct buf *b;
 
   // Is the block already cached?
@@ -126,53 +133,56 @@ bget(uint dev, uint blockno)
   // However, do not try to lock hashtable.lock[index] before here which may cause deadlock.
   // Remember to double-check if the block is already cached because of we release hashtable.lock[index].
   acquire(&bcache.lock);
+
   // Look for the LRU.
   // As mentioned above, to avoid deadlock, acquire hashtable.lock[] ascendingly, which means there will be time gap between previous check of whether block is already cached and the following selecting process.
   for(int i = 0; i < HNUM; ++i){
     acquire(&hashtable.lock[i]);
-    struct buf *ptr = &hashtable.head[i];
+
     int selected = 0;
-    while(ptr != 0) {
-      // Continue if the current buf is being used or one of the heads.
-      if(ptr->refcnt > 0 || ptr->tick >= earliest || ptr == &hashtable.head[i]){
-        ptr = ptr->next;
+    for(struct buf *ptr = hashtable.head[i].next; ptr; ptr = ptr->next){
+      // Continue if the current buf is being used.
+      if(ptr->refcnt > 0 || (ptr->tick >= earliest && select == 0))
         continue;
-      }
 
       // If there's a better choice, release the lock of the latter one, except when there's no buf selected, or the buf is in the same bucket with the one that's being bget() or the same bucket with the last one selected.
-      int relcond = select != 0 && i != index && selected == 0;
+      int relcond = select != 0 && INDEX(select->blockno) != index && selected == 0;
       if(relcond)
-        release(&hashtable.lock[select->blockno % HNUM]);
+        release(&hashtable.lock[INDEX(select->blockno)]);
+
       // Mark that indicates there's one buf being selected in this bucket.
       selected = 1;
       earliest = ptr->tick;
       select = ptr;
-      ptr = ptr->next;
     }
+
     // Release the lock of the bucket, if there's no buf being selected or the current bucket is the one the buf being bget() should be in.
     if(!selected && i != index)
       release(&hashtable.lock[i]);
   }
   // After the loop above, both (or the only one needed) bucket(s) are locked
 
+  int previ = INDEX(select->blockno);
+
   // Because of the time gap mentioned above, double-check if there's existing one that's of the same blockno. If so, return.
   if((b = hget(dev, blockno)) != 0){
     b->refcnt++;
-    if(select && (select->blockno % HNUM != index))
-      release(&hashtable.lock[select->blockno % HNUM]);
+
+    if(select && (previ != index))
+      release(&hashtable.lock[previ]);
     release(&hashtable.lock[index]);
     release(&bcache.lock);
     acquiresleep(&b->lock);
 
     return b;
   }
+
   if(!select)
     panic("bget: no buffers");
 
-  int previ = select->blockno % HNUM;
-
   if(previ != index){
-    struct buf *tail = &hashtable.head[index];
+    struct buf *tail = gettail(&hashtable.head[index]);
+
     // Because of hashtable.head[], there will always be a select->prev.
     select->prev->next = select->next;
     if(select->next != 0)
@@ -181,23 +191,15 @@ bget(uint dev, uint blockno)
     // Release the bucket from which the buf is moved that is no longer needed.
     release(&hashtable.lock[previ]);
 
-    while(tail->next != 0){
-      tail = tail->next;
-    }
     tail->next = select;
     select->prev = tail;
     select->next = 0;
-
-    select->dev = dev;
-    select->blockno = blockno;
-    select->valid = 0;
-    select->refcnt = 1;
-  } else {
-    select->dev = dev;
-    select->blockno = blockno;
-    select->valid = 0;
-    select->refcnt = 1;
   }
+
+  select->dev = dev;
+  select->blockno = blockno;
+  select->valid = 0;
+  select->refcnt = 1;
 
   release(&hashtable.lock[index]);
   release(&bcache.lock);
@@ -237,10 +239,11 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
-  uint i = b->blockno % HNUM;
+  uint i = INDEX(b->blockno);
 
   acquire(&hashtable.lock[i]);
   b->refcnt--;
+  b->tick = ticks;
   release(&hashtable.lock[i]);
 
   releasesleep(&b->lock);
@@ -248,7 +251,7 @@ brelse(struct buf *b)
 
 void
 bpin(struct buf *b) {
-  uint i = b->blockno % HNUM;
+  uint i = INDEX(b->blockno);
   acquire(&hashtable.lock[i]);
   b->refcnt++;
   release(&hashtable.lock[i]);
@@ -256,10 +259,8 @@ bpin(struct buf *b) {
 
 void
 bunpin(struct buf *b) {
-  uint i = b->blockno % HNUM;
+  uint i = INDEX(b->blockno);
   acquire(&hashtable.lock[i]);
   b->refcnt--;
   release(&hashtable.lock[i]);
 }
-
-
