@@ -82,10 +82,7 @@ hinit(void)
 {
   int i;
   for (i = 0; i < HNUM; ++i){
-    char lockname[16];
-    snprintf(lockname, 16, "bcache.bucket%d", i);
-
-    initlock(&hashtable.lock[i], lockname);
+    initlock(&hashtable.lock[i], "bcache.bucket");
   }
 
   for(i = 0; i < NBUF; ++i){
@@ -99,9 +96,9 @@ hinit(void)
 void
 binit(void)
 {
-  hinit();  // Initialize hashtable、
-
   initlock(&bcache.lock, "bcache");
+
+  hinit();  // Initialize hashtable.
 }
 
 // Look through buffer cache for block on device dev.
