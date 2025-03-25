@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "log_out": "log",
+        "log_err": "log",
+        "memlayout.h": "c",
+        "limits": "c",
+        "cstdlib": "c",
+        "sleeplock.h": "c",
+        "user.h": "c",
+        "param.h": "c",
+        "defs.h": "c",
+        "riscv.h": "c",
+        "fs.h": "c"
+    }
+}
