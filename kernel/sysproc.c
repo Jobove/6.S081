@@ -95,3 +95,23 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_mmap(void)
+{
+  void *addr;
+  int length, prot, flags, fd, offset;
+
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0){
+    return -1;
+  }
+
+
+  return 0;
+}
+
+uint64
+sys_munmap(void)
+{
+  return 0;
+}
