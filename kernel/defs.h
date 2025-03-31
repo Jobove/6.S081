@@ -183,5 +183,14 @@ void            virtio_disk_init(void);
 void            virtio_disk_rw(struct buf *, int);
 void            virtio_disk_intr(void);
 
+// sysfile.c
+void readintopage(struct file *, int, uint64, uint64, uint);
+
+// file.c
+int checkperm(struct file *, int, int);
+
+// sysproc.c
+int kunmap(uint64, int);
+
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

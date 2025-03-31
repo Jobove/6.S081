@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -282,6 +283,20 @@ fork(void)
   }
   np->sz = p->sz;
 
+  for(int i = 0; i < 16; ++i){
+    struct vma *v = &p->vma[i], *nv = &np->vma[i];
+
+    if(!v->used) continue;
+    uvmunmap(p->pagetable, PGROUNDDOWN(v->addr), v->length / PGSIZE, 1);
+    nv->used = 1;
+    nv->addr = v->addr;
+    nv->perm = v->perm;
+    nv->flags = v->flags;
+    nv->length = v->length;
+    nv->file = v->file;
+    filedup(nv->file);
+  }
+
   np->parent = p;
 
   // copy saved user registers.
@@ -351,6 +366,13 @@ exit(int status)
       fileclose(f);
       p->ofile[fd] = 0;
     }
+  }
+
+  for(int i = 0; i < 16; ++i){
+    struct vma *v = &p->vma[i];
+    if(!v->used)  continue;
+
+    if(kunmap(v->addr, v->length) < 0)  panic("exit: unmap");
   }
 
   begin_op();

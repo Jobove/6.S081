@@ -82,11 +82,14 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
-struct mappedfile {
-  void *addr;
+struct vma {
+  int used;
+  uint64 addr;
   uint64 length;
-  int perm;
-  struct file *f;
+  uint perm;
+  uint flags;
+  struct file *file;
+  struct inode *ip;
 };
 
 // Per-process state
@@ -111,6 +114,5 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 
-  struct mappedfile mf[16];
-  int mfu[16];
+  struct vma vma[16];
 };

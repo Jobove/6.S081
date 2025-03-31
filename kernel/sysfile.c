@@ -484,3 +484,11 @@ sys_pipe(void)
   }
   return 0;
 }
+
+void
+readintopage(struct file *f, int mode, uint64 vaddr, uint64 off, uint size)
+{
+  ilock(f->ip);
+  readi(f->ip, mode, vaddr, off, size);
+  iunlock(f->ip);
+}
