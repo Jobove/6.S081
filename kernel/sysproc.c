@@ -98,16 +98,16 @@ sys_uptime(void)
 }
 
 int
-gvma()
+getvma()
 {
   struct proc *p = myproc();
-  for(int i = 0; i < 16; ++i) {
+  for(int i = 0; i < NVMA; ++i) {
     if(!p->vma[i].used) {
       return i;
     }
   }
 
-  panic("gvma: no available.");
+  panic("getvma: no available.");
 }
 
 uint64
@@ -115,52 +115,55 @@ sys_mmap(void)
 {
   uint64 addr;
   int length, prot, flags, fd, offset;
-  struct proc *p = myproc();
+  struct proc *p;
+  struct file *f;
 
   if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)  return 0xfffffffffffffff;
   if(addr != 0) panic("mmap: address given.");
 
-  if(p->sz + length > TRAPFRAME - PGSIZE) return 0xffffffffffffffff;
-  struct file *f = p->ofile[fd];
+  p = myproc();
+  f = p->ofile[fd];
+
+  if(p->sz + length >= TRAPFRAME) return 0xffffffffffffffff;
   if(!f || checkperm(f, prot, flags) < 0) return 0xffffffffffffffff;
 
-  struct vma *v = &p->vma[gvma()];
-  v->used = 1;
-  v->addr = p->sz;
-  v->perm = prot;
-  v->flags = flags;
-  v->length = length;
-  v->file = p->ofile[fd];
+  struct vma *vma = &p->vma[getvma()];
 
-  filedup(v->file);
+  vma->used = 1;
+  vma->addr = p->sz;
+  vma->perm = prot;
+  vma->flags = flags;
+  vma->length = length;
+  vma->file = p->ofile[fd];
+
+  filedup(vma->file);
   p->sz += length;
-  readintopage(v->file, 1, v->addr, 0, length);
+  readintopage(vma->file, 1, vma->addr, 0, length);
 
-  return v->addr;
+  return vma->addr;
 }
 
 int
 kunmap(uint64 addr, int length)
 {
   struct proc *p = myproc();
-
   struct vma *v = 0;
-  for(int i = 0; i < 16; ++i){
+
+  for(int i = 0; i < NVMA; ++i){
     if(!p->vma[i].used)  continue;
-    
-    if(addr >= p->vma[i].addr && addr < p->vma[i].addr + length){
-      v = &p->vma[i];
-      break;
-    }
+    if(addr < p->vma[i].addr || addr >= p->vma[i].addr + length)  continue;
+
+    v = &p->vma[i];
   }
+
   if(!v)  return 0;
   if(v->flags & MAP_SHARED) filewrite(v->file, addr, length);
   uvmunmap(p->pagetable, PGROUNDDOWN(addr), length / PGSIZE, 1);
 
   if(addr == v->addr && length == v->length){
     v->used = 0;
-    addr = 0;
-    length = 0;
+    v->addr = 0;
+    v->length = 0;
     fileclose(v->file);
   } else if(addr + length == v->addr + length){
     v->length -= length;

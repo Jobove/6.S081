@@ -82,12 +82,17 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+// maximum number of virtual memory areas.
+#define NVMA (16)
+
 struct vma {
   int used;
+  
   uint64 addr;
   uint64 length;
   uint perm;
   uint flags;
+
   struct file *file;
   struct inode *ip;
 };
@@ -114,5 +119,5 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 
-  struct vma vma[16];
+  struct vma vma[NVMA];        // VMA array for every process.
 };

@@ -78,7 +78,7 @@ usertrap(void)
     }
 
     struct vma *vma = 0;
-    for(int i = 0; i < 16; ++i){
+    for(int i = 0; i < NVMA; ++i){
       struct vma *v = &p->vma[i];
       if(!v->used)  continue;
 
