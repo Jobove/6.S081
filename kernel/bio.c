@@ -23,82 +23,58 @@
 #include "fs.h"
 #include "buf.h"
 
+#define NBUCKET 13
+#define BUF_PER_BUCKET 100
+
+struct buf bufs[NBUF];
+
+struct bucket {
+  struct spinlock per_bucket_lock;
+
+  // Linked list of all buffers, through prev/next.
+  // Sorted by how recently the buffer was used.
+  // head.next is most recent, head.prev is least.
+  struct buf head;
+};
+
 struct {
-  // The lock that must be acquire before any proccess trys to evict buf.
-  struct spinlock lock;
-  struct buf buf[NBUF];
-} bcache;
+  // used only when cache miss and buffer needs to be reallocated
+  struct spinlock buckets_lock;
+  struct bucket bucket[NBUCKET];
+} buckets;
 
-struct buf *
-gettail(struct buf *b)
-{
-  while(b->next)
-    b = b->next;
-
-  return b;
-}
-
-#define HNUM (13)
-#define INDEX(blockno) ((blockno) % (HNUM))
-
-struct hashtable {
-  struct buf head[HNUM];
-  struct spinlock lock[HNUM];
-} hashtable;
-
-struct buf *
-hget(uint dev, int blockno)
-{
-  uint i = INDEX(blockno);
-
-  struct buf *b = &hashtable.head[i];
-  while(b != 0){
-    if(b->dev == dev && b->blockno == blockno){
-      return b;
-    }
-    b = b->next;
-  }
-
-  return 0;
-}
-
-void
-hadd(uint blockno, struct buf *b)
-{
-  b->blockno = blockno;
-  b->refcnt = 0;
-  b->valid = 0;
-
-  uint i = INDEX(blockno);
-  struct buf *tail = gettail(&hashtable.head[i]);
-
-  tail->next = b;
-  b->prev = tail;
-  b->next = 0;
-}
-
-void
-hinit(void)
-{
-  int i;
-  for (i = 0; i < HNUM; ++i){
-    initlock(&hashtable.lock[i], "bcache.bucket");
-  }
-
-  for(i = 0; i < NBUF; ++i){
-    struct buf *b = &bcache.buf[i];
-
-    hadd(i, b);
-    initsleeplock(&b->lock, "buffer");
-  }
-}
+#define INDEX(blockno) ((blockno) % NBUCKET)
 
 void
 binit(void)
 {
-  initlock(&bcache.lock, "bcache");
+  struct buf *b;
+  struct bucket *bucket;
 
-  hinit();  // Initialize hashtable.
+  initlock(&buckets.buckets_lock, "bcache.buckets_lock");
+
+  for (int i = 0; i < NBUCKET; ++i) {
+    bucket = buckets.bucket + i;
+    char *lock_name = "bcache.per_bucket_lock_00";
+    lock_name[23] += i / 10;
+    lock_name[24] += i % 10;
+
+    initlock(&bucket->per_bucket_lock, lock_name);
+
+    // ! should be a cycled linked list
+    bucket->head.prev = &bucket->head;
+    bucket->head.next = &bucket->head;
+  }
+
+  bucket = &buckets.bucket[0];
+  // Updated b's prev and next and previous head->next's prev and head->next
+  for (b = bufs; b < bufs+NBUF; b++) {
+    b->next = bucket->head.next;
+    b->prev = &bucket->head;
+    initsleeplock(&b->lock, "buffer");
+    bucket->head.next->prev = b;
+    bucket->head.next = b;
+  }
 }
 
 // Look through buffer cache for block on device dev.
@@ -107,102 +83,101 @@ binit(void)
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  uint index = INDEX(blockno);
+  int index = INDEX(blockno);
   struct buf *b;
+  struct bucket *bucket = &buckets.bucket[index];
+  struct spinlock *lock = &bucket->per_bucket_lock;
+
+  acquire(lock);
 
   // Is the block already cached?
-  acquire(&hashtable.lock[index]);
-  if((b = hget(dev, blockno)) != 0){
-    b->refcnt++;
-    release(&hashtable.lock[index]);
-    acquiresleep(&b->lock);
-
-    return b;
+  for(b = bucket->head.next; b != &bucket->head; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){
+      b->refcnt++;
+      release(lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
   }
-  release(&hashtable.lock[index]);
 
   // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  int earliest = __INT32_MAX__;
-  struct buf *select = 0;
+  /*
+    Acquire buckets_lock first before trying to perform substitution
+    should avoid deadlock when two threads holding other's required lock
+    acquire other's lock because the lock prevents more than one thread
+    from trying to substitute.
+  */
+  acquire(&buckets.buckets_lock);
 
-  // Any process trying to evict should acquire bcache.lock first.
-  // However, do not try to lock hashtable.lock[index] before here which may cause deadlock.
-  // Remember to double-check if the block is already cached because of we release hashtable.lock[index].
-  acquire(&bcache.lock);
+  uint64 lru = __UINT32_MAX__;
+  struct buf *lru_buf = 0;
+  // hold the source bucket lock until we find a lru-er one
+  struct bucket *lru_bucket = 0;
 
-  // Look for the LRU.
-  // As mentioned above, to avoid deadlock, acquire hashtable.lock[] ascendingly, which means there will be time gap between previous check of whether block is already cached and the following selecting process.
-  for(int i = 0; i < HNUM; ++i){
-    acquire(&hashtable.lock[i]);
-
-    int selected = 0;
-    for(struct buf *ptr = hashtable.head[i].next; ptr; ptr = ptr->next){
-      // Continue if the current buf is being used.
-      if(ptr->refcnt > 0 || (ptr->tick >= earliest && select == 0))
+  for (int i = 0; i < NBUCKET; ++i) {
+    struct bucket *this_bucket = buckets.bucket + i;
+    
+    if (this_bucket != bucket)
+      acquire(&this_bucket->per_bucket_lock);
+    for (b = this_bucket->head.next; b != &this_bucket->head; b = b->next) {
+      if (b->refcnt != 0 || b->timestamp >= lru) {
         continue;
+      }
 
-      // If there's a better choice, release the lock of the latter one, except when there's no buf selected, or the buf is in the same bucket with the one that's being bget() or the same bucket with the last one selected.
-      int relcond = select != 0 && INDEX(select->blockno) != index && selected == 0;
-      if(relcond)
-        release(&hashtable.lock[INDEX(select->blockno)]);
+      // if the last one belongs to a different bucket
+      // release its lock
+      if (lru_bucket != this_bucket) {
+        if (lru_bucket)
+          release(&lru_bucket->per_bucket_lock);
+        lru_bucket = this_bucket;
+        lru_buf = b;
+      }
 
-      // Mark that indicates there's one buf being selected in this bucket.
-      selected = 1;
-      earliest = ptr->tick;
-      select = ptr;
+      lru = b->timestamp;
     }
 
-    // Release the lock of the bucket, if there's no buf being selected or the current bucket is the one the buf being bget() should be in.
-    if(!selected && i != index)
-      release(&hashtable.lock[i]);
-  }
-  // After the loop above, both (or the only one needed) bucket(s) are locked
-
-  int previ = INDEX(select->blockno);
-
-  // Because of the time gap mentioned above, double-check if there's existing one that's of the same blockno. If so, return.
-  if((b = hget(dev, blockno)) != 0){
-    b->refcnt++;
-
-    if(select && (previ != index))
-      release(&hashtable.lock[previ]);
-    release(&hashtable.lock[index]);
-    release(&bcache.lock);
-    acquiresleep(&b->lock);
-
-    return b;
+    // if we cannot find a better candidate, release the lock of current bucket
+    // otherwise, keep the lock for substitution
+    if (lru_bucket != this_bucket) {
+      release(&this_bucket->per_bucket_lock);
+    }
   }
 
-  if(!select)
+  if (lru_buf == 0) {
     panic("bget: no buffers");
-
-  if(previ != index){
-    struct buf *tail = gettail(&hashtable.head[index]);
-
-    // Because of hashtable.head[], there will always be a select->prev.
-    select->prev->next = select->next;
-    if(select->next != 0)
-      select->next->prev = select->prev;
-
-    // Release the bucket from which the buf is moved that is no longer needed.
-    release(&hashtable.lock[previ]);
-
-    tail->next = select;
-    select->prev = tail;
-    select->next = 0;
   }
 
-  select->dev = dev;
-  select->blockno = blockno;
-  select->valid = 0;
-  select->refcnt = 1;
+  // Extract lru_buf from its previous bucket
+  if (lru_buf->next == &lru_bucket->head) {
+    // if it's the end of the list, we should change its prev->next to head 
+    // and change head->prev to the second last one
+    lru_buf->prev->next = &lru_bucket->head;
+    lru_bucket->head.prev = lru_buf->prev;
+  } else {
+    lru_buf->next->prev = lru_buf->prev;
+    lru_buf->prev->next = lru_buf->next;
+  }
 
-  release(&hashtable.lock[index]);
-  release(&bcache.lock);
-  acquiresleep(&select->lock);
+  // Done with source bucket, release its lock.
+  // ? shall we do it when everything's done?
+  release(&lru_bucket->per_bucket_lock);
 
-  return select;
+  // Insert lru_buf to the front of destination bucket
+  lru_buf->prev = &bucket->head;
+  lru_buf->next = bucket->head.next;
+  bucket->head.next->prev = lru_buf;        // change previous front's prev from head to lru_buf
+  bucket->head.next = lru_buf;          // change head's next to lru_buf
+
+  lru_buf->dev = dev;
+  lru_buf->blockno = blockno;
+  lru_buf->valid = 0;
+  lru_buf->refcnt = 1;
+
+  release(&buckets.buckets_lock);
+  acquiresleep(&lru_buf->lock);
+
+  // return with per_bucket_lock locked
+  return lru_buf;
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -236,28 +211,37 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
-  uint i = INDEX(b->blockno);
-
-  acquire(&hashtable.lock[i]);
-  b->refcnt--;
-  b->tick = ticks;
-  release(&hashtable.lock[i]);
-
   releasesleep(&b->lock);
+
+  int blockno = b->blockno, index = INDEX(blockno);
+  struct bucket *bucket = &buckets.bucket[index];
+  struct spinlock *lock = &bucket->per_bucket_lock;
+
+  acquire(lock);
+  b->refcnt--;
+  release(lock);
 }
 
 void
 bpin(struct buf *b) {
-  uint i = INDEX(b->blockno);
-  acquire(&hashtable.lock[i]);
+  int blockno = b->blockno, index = INDEX(blockno);
+  struct bucket *bucket = &buckets.bucket[index];
+  struct spinlock *lock = &bucket->per_bucket_lock;
+
+  acquire(lock);
   b->refcnt++;
-  release(&hashtable.lock[i]);
+  release(lock);
 }
 
 void
 bunpin(struct buf *b) {
-  uint i = INDEX(b->blockno);
-  acquire(&hashtable.lock[i]);
+  int blockno = b->blockno, index = INDEX(blockno);
+  struct bucket *bucket = &buckets.bucket[index];
+  struct spinlock *lock = &bucket->per_bucket_lock;
+
+  acquire(lock);
   b->refcnt--;
-  release(&hashtable.lock[i]);
+  release(lock);
 }
+
+
