@@ -1,0 +1,6 @@
+buckets.lock确保当一个线程（因找不到对应block而）获取了该锁之后，其他线程将此block加入到对应的bucket中，因此可以直接将per_bucket_lock释放，无需担心在获取buckets.lock之后，有相同的页已经被加入到桶中。
+为了避免死锁，在获取buckets.lock之前，应当将对应的per_bucket_lock释放。为此，在获取buckets.lock之后，应重新检查是否已有对应的页被放入桶中。
+在逐个桶地查询可替换的块时，可以考虑将当前最优选对应的per_bucket_lock锁定，以避免将该锁释放后，有其他线程使该block.refcnt++而导致候选失效。
+
+在此过程中，除非被选中，无需将待获取block对应的桶的锁获取，因为不会有其他线程添加待获取的block从而导致重复。也就是说，在逐桶查询的过程中，只锁定lru_bucket的锁（避免候选失效）以及候选桶的锁（避免更新lru时其他线程修改候选信息导致候选失效）。
+Groud Truth: 对于待获取block对应的桶，我们要求的invariant只有不存在其他线程将该block加入到桶中从而导致副本的出现。而这一点已经由buckets.lock确定。
