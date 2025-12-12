@@ -24,13 +24,10 @@
 #include "buf.h"
 
 #define NBUCKET 13
-#define BUF_PER_BUCKET 100
 
 struct buf bufs[NBUF];
 
 struct bucket {
-  // struct spinlock append_lock;
-  // struct spinlock evict_lock;
   struct spinlock per_bucket_lock;
 
   // Linked list of all buffers, through prev/next.
@@ -130,7 +127,7 @@ bget(uint dev, uint blockno)
   */
   acquire(&buckets.buckets_lock);
 
-  acquire(lock);
+  // acquire(lock);
   existed = check(dev, blockno);
   if (existed) {
     existed->refcnt++;
@@ -140,7 +137,7 @@ bget(uint dev, uint blockno)
     acquiresleep(&existed->lock);
     return existed;
   }
-  release(lock);
+  // release(lock);
 
   uint64 lru = __UINT32_MAX__;
   struct buf *lru_buf = 0;
