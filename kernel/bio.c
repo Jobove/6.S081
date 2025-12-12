@@ -127,7 +127,6 @@ bget(uint dev, uint blockno)
   */
   acquire(&buckets.buckets_lock);
 
-  // acquire(lock);
   existed = check(dev, blockno);
   if (existed) {
     existed->refcnt++;
@@ -137,7 +136,6 @@ bget(uint dev, uint blockno)
     acquiresleep(&existed->lock);
     return existed;
   }
-  // release(lock);
 
   uint64 lru = __UINT32_MAX__;
   struct buf *lru_buf = 0;
@@ -202,6 +200,7 @@ bget(uint dev, uint blockno)
   lru_buf->blockno = blockno;
   lru_buf->valid = 0;
   lru_buf->refcnt = 1;
+  lru_buf->timestamp = ticks;
 
   release(lock);
   release(&buckets.buckets_lock);
