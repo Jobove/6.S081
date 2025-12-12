@@ -19,7 +19,7 @@ static struct mbuf *rx_mbufs[RX_RING_SIZE];
 // remember where the e1000's registers live.
 static volatile uint32 *regs;
 
-struct spinlock e1000_lock;
+struct spinlock e1000_lock, e1000_tx, e1000_rx;
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -30,6 +30,8 @@ e1000_init(uint32 *xregs)
   int i;
 
   initlock(&e1000_lock, "e1000");
+  initlock(&e1000_tx, "e1000_tx");
+  initlock(&e1000_rx, "e1000_rx");
 
   regs = xregs;
 
@@ -108,7 +110,7 @@ e1000_transmit(struct mbuf *m)
   //
 
   // Ask E1000 for transmission tail pointer
-  acquire(&e1000_lock);
+  acquire(&e1000_tx);
 
   // Check if the queue is full
   uint16 tail = regs[E1000_TDT];
@@ -127,18 +129,19 @@ e1000_transmit(struct mbuf *m)
   tx_mbufs[tail] = m;
 
   // set the corresponding field of tx_desc
-  descriptor->addr = (uint64) m->buf;
+  descriptor->addr = (uint64) m->head;
   descriptor->length = m->len;
+
   // set the correct cmd field of tx_desc, more specifically RS to enable DD
   // might consider IDE to enable transmit interrupt(make sure IMS.TXDW is set as well)
-  // // ? should we (not) set EOP?
-  // there is no need to set EOP because E1000 always send interrupt if RS is set.
-  descriptor->cmd = E1000_TXD_CMD_RS;
+  // // ? should we (not) set IDE?
+  // there is no need to set IDE because E1000 always send interrupt if RS is set.
+  descriptor->cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
   descriptor->status &= ~E1000_TXD_STAT_DD; // clear DD to indicate descriptor is in use
 
   regs[E1000_TDT] = (tail + 1) % TX_RING_SIZE;
 
-  release(&e1000_lock);
+  release(&e1000_tx);
 
   return 0;
 }
@@ -152,6 +155,29 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+
+  acquire(&e1000_rx);
+
+  uint16 tail;
+  while (1) {
+    tail = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+    struct rx_desc *descriptor = &rx_ring[tail];
+    if ((descriptor->status & E1000_RXD_STAT_EOP) == 0 || (descriptor->status & E1000_RXD_STAT_DD) == 0) {
+      release(&e1000_rx);
+      return;
+    }
+
+    struct mbuf *m = rx_mbufs[tail];
+    m->len = descriptor->length;
+    net_rx(m);
+
+    m = mbufalloc(0);
+    descriptor->addr = (uint64) m->head;
+    descriptor->status = 0;
+    rx_mbufs[tail] = m;
+    regs[E1000_RDT] = tail;
+  }
 }
 
 void
